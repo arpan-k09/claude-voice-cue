@@ -1,91 +1,109 @@
 # claude-voice-cue
 
-A small cross-platform CLI wrapper around `claude code` that speaks
-**"Input needed"** when the process is likely waiting on you.
+Hear **"Input needed"** when Claude Code is waiting on you.
 
-It is a transparent passthrough: arguments, stdin, stdout, exit codes,
-window resizes, and signals all flow through unchanged. The TUI runs
-inside a PTY so interactivity is not degraded.
+This is a one-file hook for Claude Code. You install it once; after that you
+run plain `claude` exactly as before, and your machine speaks when Claude
+pauses for permission, a plan review, or any other input.
+
+No wrapper command, no alias, no new workflow. Uses Claude Code's native
+`Notification` hook, so detection is exact — no heuristics and no false
+positives.
 
 ## Install
 
 ```sh
-git clone <this repo>
+git clone https://github.com/arpan-k09/claude-voice-cue.git
 cd claude-voice-cue
-npm install            # builds node-pty
-npm link               # exposes `claude-voice-cue` on PATH
+npm install                           # zero dependencies
+node bin/claude-voice-cue.js install
 ```
 
-Requires Node.js 18+ and `claude` on your `PATH`.
+That writes a single entry into `~/.claude/settings.json`. If the file
+already exists, a timestamped `.bak.*` is created first and any of your
+existing hooks are left untouched.
 
-To point at a different binary, set `CLAUDE_VOICE_CUE_CMD`.
-
-## Usage
+Verify it:
 
 ```sh
-claude-voice-cue                  # same as `claude code`
-claude-voice-cue --resume         # args are forwarded verbatim
-claude-voice-cue path/to/project
+node bin/claude-voice-cue.js            # shows install status
+node bin/claude-voice-cue.js test       # speaks the cue once
 ```
 
-Platform notes for the audio cue:
+Then use Claude Code normally:
 
-| Platform | Mechanism | Fallback |
+```sh
+claude
+```
+
+When it stops to ask you something, you'll hear it.
+
+### Optional: put `claude-voice-cue` on PATH
+
+```sh
+npm link
+claude-voice-cue status
+```
+
+## Uninstall
+
+```sh
+node bin/claude-voice-cue.js uninstall
+```
+
+Removes only the hook entry this tool added. Any other hooks you have
+configured are preserved.
+
+## How it works
+
+Claude Code fires a `Notification` hook whenever it needs the user's
+attention (permission prompts, idle waits, etc). On install we add:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "node /abs/path/to/bin/cue.js" }
+        ]
+      }
+    ]
+  }
+}
+```
+
+`bin/cue.js` is a five-line script that calls the cross-platform speaker:
+
+| Platform | Command | Fallback |
 |---|---|---|
 | macOS | `say "Input needed"` | — |
 | Linux | `espeak "Input needed"` | terminal bell (`\a`) |
 | Windows | PowerShell SAPI | terminal bell |
 
-If no TTS backend is available, the wrapper still works — it just falls
-back to a bell or stays silent. Notification failures never affect the
-child process.
-
-## How input detection works
-
-There is no reliable, general-purpose way for an outside observer to know
-when a TUI is "waiting for input". We use two cheap, complementary signals:
-
-1. **Pattern match** on a small ANSI-stripped tail of recent output:
-   trailing `?`, `(y/n)`, `[Y/n]`, "press enter", "confirm", "proceed",
-   "continue?", and common selection carets (`❯ › »`).
-2. **Output-then-silence**: after output arrives, if the stream goes
-   quiet for ~1.5s **and** the tail still looks prompt-ish, fire.
-
-Both share a single ~6s debounce so a single prompt produces a single cue.
-
-### Tradeoffs (intentional)
-
-- **False positives.** A prose `?` from the model can trigger a cue. The
-  debounce keeps this tolerable; tightening the patterns would cause
-  false negatives, which are worse for this use case.
-- **False negatives.** A custom prompt with no recognizable marker
-  (e.g. a bare text input) may be missed by the pattern layer; the
-  idle-after-output heuristic catches many of these but not all.
-- **No TUI introspection.** We deliberately do not parse claude's
-  rendered frames or escape sequences. That would be brittle and would
-  break on every upstream UI change.
+The hook runs asynchronously, so a slow TTS call cannot block Claude's UI.
+If no TTS backend is installed, the cue silently falls back to the bell.
 
 ## Project layout
 
 ```
-bin/claude-voice-cue.js   # entry point
-src/runner.js             # PTY orchestration, signal & resize forwarding
-src/detector.js           # ANSI strip + prompt heuristics + debounce
-src/notifier.js           # platform TTS dispatch, non-blocking, fail-silent
+bin/claude-voice-cue.js    status / install / uninstall / test CLI
+bin/cue.js                 the tiny script Claude Code's hook invokes
+src/installer.js           safe settings.json merge + atomic write + backup
+src/notifier.js            platform TTS dispatch, non-blocking, fail-silent
+test/installer.test.js     11 cases covering install/uninstall/idempotency
+test/notifier.test.js      spawn stub verifying per-platform dispatch
 ```
 
-Each module has one job and ~100 lines or fewer. There are no plugin
-hooks, no config files, and no runtime flags by design.
+Zero runtime dependencies.
 
 ## Known limitations
 
-- `node-pty` is a native module and must compile on install. This is the
-  price of true PTY fidelity; piping stdio degrades the TUI.
-- Windows support is implemented but exercised less than macOS/Linux.
-- Heuristic detection is, and will remain, heuristic.
-
-## Possible future work
-
-- Optional `--quiet` env var to suppress the cue without unwrapping.
-- A small set of recorded test fixtures (captured PTY streams) to pin
-  detector behavior across claude code versions.
+- The cue phrase is hardcoded to "Input needed". Edit `src/notifier.js` if
+  you want to change it.
+- Linux requires `espeak` for actual speech: `sudo apt install espeak`.
+  Without it you get the terminal bell.
+- Claude Code's Notification hook fires whenever Claude needs attention, so
+  the cue fires on both permission prompts and idle waits. If that ever
+  feels noisy in practice we can add debouncing — not before.

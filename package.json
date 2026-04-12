@@ -1,9 +1,10 @@
 {
   "name": "claude-voice-cue",
-  "version": "0.1.0",
-  "description": "Cross-platform voice cue wrapper for `claude code` that speaks when input is likely needed.",
+  "version": "0.2.0",
+  "description": "Voice cue for Claude Code. Installs a Notification hook so plain `claude` speaks when it's waiting on you.",
   "bin": {
-    "claude-voice-cue": "bin/claude-voice-cue.js"
+    "claude-voice-cue": "bin/claude-voice-cue.js",
+    "claude-cue": "bin/cue.js"
   },
   "files": [
     "bin",
@@ -14,11 +15,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "postinstall": "node scripts/fix-node-pty-perms.js",
-    "test": "node test/detector.test.js && node test/integration.test.js"
-  },
-  "dependencies": {
-    "node-pty": "^1.0.0"
+    "test": "node test/installer.test.js && node test/notifier.test.js"
   },
   "license": "MIT"
 }

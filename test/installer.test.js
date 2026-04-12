@@ -1,0 +1,180 @@
+'use strict';
+
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+
+const installer = require('../src/installer');
+
+const tests = [];
+function test(name, fn) { tests.push({ name, fn }); }
+
+function tmpHome() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cvc-'));
+  return dir;
+}
+
+function read(file) {
+  return JSON.parse(fs.readFileSync(file, 'utf8'));
+}
+
+function write(file, obj) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(obj, null, 2));
+}
+
+test('install on missing settings.json creates file with hook', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  const r = installer.install({ home });
+  if (!r.changed) throw new Error('expected changed=true');
+  if (r.backup !== null) throw new Error('expected no backup for new file');
+  const got = read(file);
+  const cmd = got.hooks.Notification[0].hooks[0].command;
+  if (!cmd.includes('bin/cue.js')) throw new Error(`command missing marker: ${cmd}`);
+});
+
+test('install preserves unrelated existing hooks', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  write(file, {
+    hooks: {
+      PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo pre' }] }],
+      Notification: [
+        { matcher: '', hooks: [{ type: 'command', command: 'echo someone-elses-hook' }] },
+      ],
+    },
+    other: 'keep-me',
+  });
+  installer.install({ home });
+  const got = read(file);
+  if (got.other !== 'keep-me') throw new Error('top-level key lost');
+  if (got.hooks.PreToolUse[0].hooks[0].command !== 'echo pre')
+    throw new Error('unrelated hook event lost');
+  const notif = got.hooks.Notification;
+  if (notif.length !== 2) throw new Error(`expected 2 notification entries, got ${notif.length}`);
+  if (notif[0].hooks[0].command !== 'echo someone-elses-hook')
+    throw new Error('unrelated Notification entry was clobbered');
+  if (!notif[1].hooks[0].command.includes('bin/cue.js'))
+    throw new Error('our entry not appended');
+});
+
+test('install is idempotent', () => {
+  const home = tmpHome();
+  installer.install({ home });
+  const r2 = installer.install({ home });
+  if (r2.changed) throw new Error('second install should be no-op');
+  if (r2.backup !== null) throw new Error('no-op install must not backup');
+  const notif = read(installer.settingsPath(home)).hooks.Notification;
+  if (notif.length !== 1) throw new Error(`expected 1 entry, got ${notif.length}`);
+});
+
+test('install replaces stale path from prior install', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  // Simulate a prior install whose absolute path no longer matches (user
+  // moved the repo). Marker substring still matches, so installer should
+  // replace in place rather than appending a duplicate.
+  write(file, {
+    hooks: {
+      Notification: [
+        { matcher: '', hooks: [{ type: 'command', command: 'node /old/path/bin/cue.js' }] },
+      ],
+    },
+  });
+  const r = installer.install({ home });
+  if (!r.changed) throw new Error('expected changed=true for path drift');
+  const notif = read(file).hooks.Notification;
+  if (notif.length !== 1) throw new Error(`expected replace not append; got ${notif.length}`);
+  if (notif[0].hooks[0].command.includes('/old/path/'))
+    throw new Error('stale entry not replaced');
+});
+
+test('install backs up existing file before mutating', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  write(file, { hooks: {} });
+  const r = installer.install({ home });
+  if (!r.backup) throw new Error('expected backup path');
+  if (!fs.existsSync(r.backup)) throw new Error('backup file missing');
+});
+
+test('install refuses to overwrite malformed JSON', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, '{ this is not json ');
+  let threw = false;
+  try { installer.install({ home }); } catch { threw = true; }
+  if (!threw) throw new Error('expected install to throw on invalid json');
+  // And the file must be untouched.
+  if (fs.readFileSync(file, 'utf8') !== '{ this is not json ')
+    throw new Error('malformed file was modified');
+});
+
+test('uninstall removes only our entry', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  write(file, {
+    hooks: {
+      Notification: [
+        { matcher: '', hooks: [{ type: 'command', command: 'echo keep-me' }] },
+      ],
+    },
+  });
+  installer.install({ home });
+  const r = installer.uninstall({ home });
+  if (!r.changed) throw new Error('expected changed=true');
+  const notif = read(file).hooks.Notification;
+  if (!notif || notif.length !== 1) throw new Error('unrelated entry not preserved');
+  if (notif[0].hooks[0].command !== 'echo keep-me') throw new Error('wrong entry removed');
+});
+
+test('uninstall on file without our hook is a no-op', () => {
+  const home = tmpHome();
+  const file = installer.settingsPath(home);
+  write(file, { hooks: { Notification: [{ matcher: '', hooks: [{ type: 'command', command: 'echo other' }] }] } });
+  const r = installer.uninstall({ home });
+  if (r.changed) throw new Error('should be no-op');
+});
+
+test('uninstall on missing file is a no-op', () => {
+  const home = tmpHome();
+  const r = installer.uninstall({ home });
+  if (r.changed) throw new Error('should be no-op');
+});
+
+test('uninstall cleans up empty hooks keys', () => {
+  const home = tmpHome();
+  installer.install({ home });
+  installer.uninstall({ home });
+  const got = read(installer.settingsPath(home));
+  if (got.hooks) throw new Error(`expected hooks key removed; got ${JSON.stringify(got)}`);
+});
+
+test('status reports installed/not installed correctly', () => {
+  const home = tmpHome();
+  const s1 = installer.status({ home });
+  if (s1.installed) throw new Error('expected not installed before install');
+  installer.install({ home });
+  const s2 = installer.status({ home });
+  if (!s2.installed) throw new Error('expected installed after install');
+  if (!s2.command.includes('bin/cue.js')) throw new Error('status.command missing marker');
+});
+
+(async () => {
+  let passed = 0, failed = 0;
+  console.log('installer');
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      console.log(`  ok   ${name}`);
+      passed++;
+    } catch (e) {
+      console.log(`  FAIL ${name}\n       ${e.message}`);
+      failed++;
+    }
+  }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed === 0 ? 0 : 1);
+})();
