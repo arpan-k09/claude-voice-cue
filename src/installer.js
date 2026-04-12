@@ -8,22 +8,32 @@
 //   - atomic: write to a temp file and rename
 //   - portable: no deps; JSON.parse/stringify only
 //   - scoped: we only touch the one hook entry we own, identified by
-//     a substring match on the absolute path of bin/cue.js
+//     a substring match on "claude-voice-cue" (matches both the cached
+//     audio file path on macOS and the fallback node command)
 //
-// Why substring match on `bin/cue.js`? It survives the user moving the repo
-// (path changes but filename doesn't), handles re-install after a rename
-// by replacing the old entry, and won't accidentally match unrelated hooks.
+// Fast path (macOS): at install time we pre-generate
+// ~/.claude/claude-voice-cue.aiff via `say -o`. The hook command becomes
+// `afplay <file>`, which starts in ~tens of ms and bypasses both node
+// startup (~100ms) and `say` cold start (~1.5–2s). On other platforms,
+// or if pre-generation fails, we fall back to `node bin/cue.js`, which
+// uses src/notifier.js for the cross-platform TTS dispatch.
 
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const cp = require('child_process');
 
 const CUE_SCRIPT_ABS = path.resolve(__dirname, '..', 'bin', 'cue.js');
-const CUE_COMMAND = `node ${JSON.stringify(CUE_SCRIPT_ABS)}`;
-const HOOK_MARKER = 'bin/cue.js'; // substring used to identify our own entry
+const NODE_FALLBACK_COMMAND = `node ${JSON.stringify(CUE_SCRIPT_ABS)}`;
+const HOOK_MARKER = 'claude-voice-cue';
+const AUDIO_PHRASE = 'Input needed';
 
 function settingsPath(home = os.homedir()) {
   return path.join(home, '.claude', 'settings.json');
+}
+
+function audioFilePath(home = os.homedir()) {
+  return path.join(home, '.claude', 'claude-voice-cue.aiff');
 }
 
 function readSettings(file) {
@@ -56,22 +66,50 @@ function atomicWrite(file, content) {
   fs.renameSync(tmp, file);
 }
 
-// Returns { changed, backup } so the CLI can tell the user what happened.
-function install({ home = os.homedir() } = {}) {
+// Default audio generator: macOS-only, uses `say -o`. Returns the absolute
+// path to the generated file on success, or null on failure / unsupported.
+// Tests inject a stub so they don't shell out.
+function defaultGenerateAudio(home) {
+  if (process.platform !== 'darwin') return null;
+  const out = audioFilePath(home);
+  try {
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    // -r 220 is ~20% faster than the default 180 wpm. Still perfectly
+    // intelligible for a two-word phrase and shaves ~250ms off playback.
+    cp.execFileSync('say', ['-r', '220', '-o', out, AUDIO_PHRASE], { stdio: 'ignore' });
+    if (fs.existsSync(out) && fs.statSync(out).size > 0) return out;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function buildHookCommand(audioFile) {
+  if (audioFile && process.platform === 'darwin') {
+    return `afplay ${JSON.stringify(audioFile)}`;
+  }
+  return NODE_FALLBACK_COMMAND;
+}
+
+function install({ home = os.homedir(), generateAudio = defaultGenerateAudio } = {}) {
   const file = settingsPath(home);
   const settings = readSettings(file);
 
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
   if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
 
+  const audioFile = generateAudio(home);
+  const command = buildHookCommand(audioFile);
+
   const ourEntry = {
     matcher: '',
-    hooks: [{ type: 'command', command: CUE_COMMAND }],
+    hooks: [{ type: 'command', command }],
   };
 
-  // Idempotency: if any existing Notification entry already points at our
-  // cue script, consider ourselves already installed. If the absolute path
-  // has drifted (user moved the repo), replace in place.
+  // Idempotency: detect existing entries by marker substring. If the full
+  // command matches, we're already installed and do nothing. Otherwise
+  // (stale path, old node-based command after upgrading to afplay, etc.)
+  // replace in place.
   const groups = settings.hooks.Notification;
   let replacedIndex = -1;
   for (let i = 0; i < groups.length; i++) {
@@ -79,8 +117,8 @@ function install({ home = os.homedir() } = {}) {
     if (!g || !Array.isArray(g.hooks)) continue;
     for (const h of g.hooks) {
       if (h && typeof h.command === 'string' && h.command.includes(HOOK_MARKER)) {
-        if (h.command === CUE_COMMAND) {
-          return { changed: false, backup: null, file, command: CUE_COMMAND };
+        if (h.command === command) {
+          return { changed: false, backup: null, file, command, audioFile };
         }
         replacedIndex = i;
         break;
@@ -97,7 +135,7 @@ function install({ home = os.homedir() } = {}) {
   }
 
   atomicWrite(file, JSON.stringify(settings, null, 2) + '\n');
-  return { changed: true, backup: backupPath, file, command: CUE_COMMAND };
+  return { changed: true, backup: backupPath, file, command, audioFile };
 }
 
 function uninstall({ home = os.homedir() } = {}) {
@@ -132,6 +170,10 @@ function uninstall({ home = os.homedir() } = {}) {
     settings.hooks.Notification = filtered;
   }
   atomicWrite(file, JSON.stringify(settings, null, 2) + '\n');
+
+  // Best-effort cleanup of the cached audio file. Missing is fine.
+  try { fs.unlinkSync(audioFilePath(home)); } catch {}
+
   return { changed: true, backup: backupPath, file };
 }
 
@@ -164,6 +206,8 @@ module.exports = {
   uninstall,
   status,
   settingsPath,
-  CUE_COMMAND,
+  audioFilePath,
+  buildHookCommand,
+  NODE_FALLBACK_COMMAND,
   CUE_SCRIPT_ABS,
 };

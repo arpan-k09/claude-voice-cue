@@ -57,7 +57,11 @@ configured are preserved.
 ## How it works
 
 Claude Code fires a `Notification` hook whenever it needs the user's
-attention (permission prompts, idle waits, etc). On install we add:
+attention (permission prompts, idle waits, etc).
+
+**macOS fast path.** On install we pre-generate
+`~/.claude/claude-voice-cue.aiff` once (via `say -r 220 -o`) and register
+a hook that plays it with `afplay`:
 
 ```json
 {
@@ -66,7 +70,7 @@ attention (permission prompts, idle waits, etc). On install we add:
       {
         "matcher": "",
         "hooks": [
-          { "type": "command", "command": "node /abs/path/to/bin/cue.js" }
+          { "type": "command", "command": "afplay \"/Users/you/.claude/claude-voice-cue.aiff\"" }
         ]
       }
     ]
@@ -74,13 +78,13 @@ attention (permission prompts, idle waits, etc). On install we add:
 }
 ```
 
-`bin/cue.js` is a five-line script that calls the cross-platform speaker:
+This bypasses both node startup (~100ms) and `say`'s voice-engine cold
+start (~500–1000ms), so the cue starts playing roughly 100ms after Claude
+fires the event instead of 1–2s later.
 
-| Platform | Command | Fallback |
-|---|---|---|
-| macOS | `say "Input needed"` | — |
-| Linux | `espeak "Input needed"` | terminal bell (`\a`) |
-| Windows | PowerShell SAPI | terminal bell |
+**Other platforms.** The hook falls back to `node bin/cue.js`, which
+dispatches to `espeak` (Linux) or PowerShell SAPI (Windows) via
+`src/notifier.js`. Same feature, slightly more startup lag.
 
 The hook runs asynchronously, so a slow TTS call cannot block Claude's UI.
 If no TTS backend is installed, the cue silently falls back to the bell.
@@ -92,7 +96,7 @@ bin/claude-voice-cue.js    status / install / uninstall / test CLI
 bin/cue.js                 the tiny script Claude Code's hook invokes
 src/installer.js           safe settings.json merge + atomic write + backup
 src/notifier.js            platform TTS dispatch, non-blocking, fail-silent
-test/installer.test.js     11 cases covering install/uninstall/idempotency
+test/installer.test.js     13 cases covering install/uninstall/idempotency
 test/notifier.test.js      spawn stub verifying per-platform dispatch
 ```
 
