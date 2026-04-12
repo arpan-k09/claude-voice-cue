@@ -1,0 +1,24 @@
+{
+  "name": "claude-voice-cue",
+  "version": "0.1.0",
+  "description": "Cross-platform voice cue wrapper for `claude code` that speaks when input is likely needed.",
+  "bin": {
+    "claude-voice-cue": "bin/claude-voice-cue.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "postinstall": "node scripts/fix-node-pty-perms.js",
+    "test": "node test/detector.test.js && node test/integration.test.js"
+  },
+  "dependencies": {
+    "node-pty": "^1.0.0"
+  },
+  "license": "MIT"
+}
