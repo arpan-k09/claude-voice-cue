@@ -28,6 +28,19 @@ const NODE_FALLBACK_COMMAND = `node ${JSON.stringify(CUE_SCRIPT_ABS)}`;
 const HOOK_MARKER = 'claude-voice-cue';
 const AUDIO_PHRASE = 'Input needed';
 
+// Which hook events we register on, in preference order.
+//
+// `PermissionRequest` fires immediately when Claude shows a tool-approval
+// or plan-approval dialog — no idle debounce. This is what the user
+// actually feels as "Claude is asking me a question."
+//
+// `Notification` is kept as a safety net: it covers other attention-wanted
+// cases (auth prompts, idle_prompt, elicitation dialogs). The `idle_prompt`
+// matcher does debounce on an inactivity timer, which is why registering
+// only on Notification produced a 2–3s delay — PermissionRequest bypasses
+// that for the common case.
+const HOOK_EVENTS = ['PermissionRequest', 'Notification'];
+
 function settingsPath(home = os.homedir()) {
   return path.join(home, '.claude', 'settings.json');
 }
@@ -91,51 +104,54 @@ function buildHookCommand(audioFile) {
   return NODE_FALLBACK_COMMAND;
 }
 
-function install({ home = os.homedir(), generateAudio = defaultGenerateAudio } = {}) {
-  const file = settingsPath(home);
-  const settings = readSettings(file);
-
+// Ensure a single "ours" entry exists in settings.hooks[event]. Returns
+// true if the array was mutated, false if our entry was already present
+// with the same command. Adds or replaces in place; never touches
+// entries belonging to other hooks.
+function upsertEventEntry(settings, event, command) {
   if (!settings.hooks || typeof settings.hooks !== 'object') settings.hooks = {};
-  if (!Array.isArray(settings.hooks.Notification)) settings.hooks.Notification = [];
-
-  const audioFile = generateAudio(home);
-  const command = buildHookCommand(audioFile);
+  if (!Array.isArray(settings.hooks[event])) settings.hooks[event] = [];
+  const groups = settings.hooks[event];
 
   const ourEntry = {
     matcher: '',
     hooks: [{ type: 'command', command }],
   };
 
-  // Idempotency: detect existing entries by marker substring. If the full
-  // command matches, we're already installed and do nothing. Otherwise
-  // (stale path, old node-based command after upgrading to afplay, etc.)
-  // replace in place.
-  const groups = settings.hooks.Notification;
-  let replacedIndex = -1;
   for (let i = 0; i < groups.length; i++) {
     const g = groups[i];
     if (!g || !Array.isArray(g.hooks)) continue;
     for (const h of g.hooks) {
       if (h && typeof h.command === 'string' && h.command.includes(HOOK_MARKER)) {
-        if (h.command === command) {
-          return { changed: false, backup: null, file, command, audioFile };
-        }
-        replacedIndex = i;
-        break;
+        if (h.command === command) return false; // already installed, same cmd
+        groups[i] = ourEntry;
+        return true;
       }
     }
-    if (replacedIndex !== -1) break;
+  }
+  groups.push(ourEntry);
+  return true;
+}
+
+function install({ home = os.homedir(), generateAudio = defaultGenerateAudio } = {}) {
+  const file = settingsPath(home);
+  const settings = readSettings(file);
+
+  const audioFile = generateAudio(home);
+  const command = buildHookCommand(audioFile);
+
+  let anyChanged = false;
+  for (const event of HOOK_EVENTS) {
+    if (upsertEventEntry(settings, event, command)) anyChanged = true;
+  }
+
+  if (!anyChanged) {
+    return { changed: false, backup: null, file, command, audioFile, events: HOOK_EVENTS };
   }
 
   const backupPath = backup(file);
-  if (replacedIndex !== -1) {
-    groups[replacedIndex] = ourEntry;
-  } else {
-    groups.push(ourEntry);
-  }
-
   atomicWrite(file, JSON.stringify(settings, null, 2) + '\n');
-  return { changed: true, backup: backupPath, file, command, audioFile };
+  return { changed: true, backup: backupPath, file, command, audioFile, events: HOOK_EVENTS };
 }
 
 function uninstall({ home = os.homedir() } = {}) {
@@ -144,31 +160,37 @@ function uninstall({ home = os.homedir() } = {}) {
     return { changed: false, backup: null, file };
   }
   const settings = readSettings(file);
-  const groups =
-    settings.hooks && Array.isArray(settings.hooks.Notification)
-      ? settings.hooks.Notification
-      : null;
-  if (!groups) return { changed: false, backup: null, file };
-
-  const before = groups.length;
-  const filtered = groups.filter((g) => {
-    if (!g || !Array.isArray(g.hooks)) return true;
-    return !g.hooks.some(
-      (h) => h && typeof h.command === 'string' && h.command.includes(HOOK_MARKER)
-    );
-  });
-
-  if (filtered.length === before) {
+  if (!settings.hooks || typeof settings.hooks !== 'object') {
     return { changed: false, backup: null, file };
   }
 
-  const backupPath = backup(file);
-  if (filtered.length === 0) {
-    delete settings.hooks.Notification;
-    if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-  } else {
-    settings.hooks.Notification = filtered;
+  // Remove our entry from every event array we ever touched. Also sweep
+  // every other hook event so upgrades from versions that used a
+  // different event set don't leave strays behind.
+  let changed = false;
+  const allEvents = new Set([...HOOK_EVENTS, ...Object.keys(settings.hooks)]);
+  for (const event of allEvents) {
+    const groups = settings.hooks[event];
+    if (!Array.isArray(groups)) continue;
+    const before = groups.length;
+    const filtered = groups.filter((g) => {
+      if (!g || !Array.isArray(g.hooks)) return true;
+      return !g.hooks.some(
+        (h) => h && typeof h.command === 'string' && h.command.includes(HOOK_MARKER)
+      );
+    });
+    if (filtered.length !== before) {
+      changed = true;
+      if (filtered.length === 0) delete settings.hooks[event];
+      else settings.hooks[event] = filtered;
+    }
   }
+
+  if (!changed) return { changed: false, backup: null, file };
+
+  if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
+
+  const backupPath = backup(file);
   atomicWrite(file, JSON.stringify(settings, null, 2) + '\n');
 
   // Best-effort cleanup of the cached audio file. Missing is fine.
@@ -179,26 +201,30 @@ function uninstall({ home = os.homedir() } = {}) {
 
 function status({ home = os.homedir() } = {}) {
   const file = settingsPath(home);
-  if (!fs.existsSync(file)) return { installed: false, file, command: null };
+  if (!fs.existsSync(file)) return { installed: false, file, command: null, events: [] };
   let settings;
   try {
     settings = readSettings(file);
   } catch {
-    return { installed: false, file, command: null, error: 'invalid json' };
+    return { installed: false, file, command: null, events: [], error: 'invalid json' };
   }
-  const groups =
-    settings.hooks && Array.isArray(settings.hooks.Notification)
-      ? settings.hooks.Notification
-      : [];
-  for (const g of groups) {
-    if (!g || !Array.isArray(g.hooks)) continue;
-    for (const h of g.hooks) {
-      if (h && typeof h.command === 'string' && h.command.includes(HOOK_MARKER)) {
-        return { installed: true, file, command: h.command };
+  const found = [];
+  let command = null;
+  if (settings.hooks && typeof settings.hooks === 'object') {
+    for (const [event, groups] of Object.entries(settings.hooks)) {
+      if (!Array.isArray(groups)) continue;
+      for (const g of groups) {
+        if (!g || !Array.isArray(g.hooks)) continue;
+        for (const h of g.hooks) {
+          if (h && typeof h.command === 'string' && h.command.includes(HOOK_MARKER)) {
+            if (!command) command = h.command;
+            if (!found.includes(event)) found.push(event);
+          }
+        }
       }
     }
   }
-  return { installed: false, file, command: null };
+  return { installed: found.length > 0, file, command, events: found };
 }
 
 module.exports = {

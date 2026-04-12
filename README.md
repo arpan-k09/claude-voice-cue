@@ -56,16 +56,34 @@ configured are preserved.
 
 ## How it works
 
-Claude Code fires a `Notification` hook whenever it needs the user's
-attention (permission prompts, idle waits, etc).
+We register on **two** Claude Code hook events, so the cue fires as soon
+as Claude actually needs input rather than after an idle debounce:
+
+- **`PermissionRequest`** — fires immediately when a tool-approval or
+  plan-approval dialog appears. This is the common case ("Claude wants
+  to run a command, y/n?") and it's what gives the cue a sub-100ms
+  reaction time.
+- **`Notification`** — kept as a safety net for other attention-wanted
+  cases (auth prompts, elicitation dialogs, idle waits). The `idle_prompt`
+  matcher on this event debounces on an inactivity timer, which is why
+  registering *only* on `Notification` previously produced a 2–3s delay
+  before the cue played.
 
 **macOS fast path.** On install we pre-generate
 `~/.claude/claude-voice-cue.aiff` once (via `say -r 220 -o`) and register
-a hook that plays it with `afplay`:
+a hook on both events that plays it with `afplay`:
 
 ```json
 {
   "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          { "type": "command", "command": "afplay \"/Users/you/.claude/claude-voice-cue.aiff\"" }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "",
@@ -78,9 +96,9 @@ a hook that plays it with `afplay`:
 }
 ```
 
-This bypasses both node startup (~100ms) and `say`'s voice-engine cold
-start (~500–1000ms), so the cue starts playing roughly 100ms after Claude
-fires the event instead of 1–2s later.
+`afplay` bypasses both node startup (~100ms) and `say`'s voice-engine
+cold start (~500–1000ms), so once the event fires the cue starts playing
+within ~100ms.
 
 **Other platforms.** The hook falls back to `node bin/cue.js`, which
 dispatches to `espeak` (Linux) or PowerShell SAPI (Windows) via

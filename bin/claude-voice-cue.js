@@ -19,6 +19,7 @@ function cmdStatus() {
   if (s.installed) {
     console.log(`installed`);
     console.log(`  settings: ${s.file}`);
+    console.log(`  events:   ${s.events.join(', ')}`);
     console.log(`  command:  ${s.command}`);
   } else {
     console.log(`not installed`);
@@ -32,10 +33,11 @@ function cmdInstall() {
   if (!r.changed) {
     console.log(`already installed`);
     console.log(`  settings: ${r.file}`);
+    console.log(`  events:   ${r.events.join(', ')}`);
     console.log(`  command:  ${r.command}`);
     return;
   }
-  console.log(`installed Notification hook`);
+  console.log(`installed hooks on ${r.events.join(', ')}`);
   console.log(`  settings: ${r.file}`);
   console.log(`  command:  ${r.command}`);
   if (r.backup) console.log(`  backup:   ${r.backup}`);
