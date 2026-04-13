@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Arpan Korat
 'use strict';
 
 // Stub child_process.spawn so speak() can be observed without actually

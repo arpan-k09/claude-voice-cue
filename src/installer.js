@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Arpan Korat
 'use strict';
 
 // Install / uninstall the Notification hook into Claude Code's settings.

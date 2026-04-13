@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Arpan Korat
 'use strict';
 
 const { spawn } = require('child_process');

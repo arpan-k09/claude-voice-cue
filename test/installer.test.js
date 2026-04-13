@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Arpan Korat
 'use strict';
 
 const fs = require('fs');
