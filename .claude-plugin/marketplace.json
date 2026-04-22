@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "claude-voice-cue",
-      "source": ".",
+      "source": "./",
       "description": "Speaks a short phrase the moment Claude is waiting on you — plan approval, tool approval, or any other attention-wanted event.",
       "version": "0.2.0",
       "author": {
