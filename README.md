@@ -56,11 +56,27 @@ process, no stdout polling, no heuristics.
 
 ## Quick start
 
+### Option A — Claude Code plugin (recommended)
+
+Inside a running `claude` session:
+
+```
+/plugin marketplace add arpan-k09/claude-voice-cue
+/plugin install claude-voice-cue@claude-voice-cue
+```
+
+That's it. Claude Code wires up the `PermissionRequest` and `Notification`
+hooks automatically; uninstall via `/plugin uninstall claude-voice-cue`.
+
+### Option B — standalone CLI
+
+For users not on a plugin-capable Claude Code version, or who prefer a
+shell install that modifies `~/.claude/settings.json` directly:
+
 ```sh
 git clone https://github.com/arpan-k09/claude-voice-cue.git
 cd claude-voice-cue
-npm install                           # zero dependencies
-node bin/claude-voice-cue.js install   # one-time setup
+node bin/claude-voice-cue.js install   # one-time setup, zero deps
 ```
 
 Then use Claude Code exactly as before:
@@ -110,9 +126,18 @@ straightforward and tracked as follow-up work.
 ## Architecture
 
 ```
+.claude-plugin/
+  plugin.json           plugin manifest
+  marketplace.json      marketplace listing (so this repo is self-serving)
+hooks/
+  hooks.json            PermissionRequest + Notification registrations
+scripts/
+  cue.js                plugin launcher — afplay on macOS, else TTS fallback
+assets/
+  input-needed.aiff     pre-generated audio shipped with the plugin
 bin/
-  claude-voice-cue.js   user-facing CLI: status / install / uninstall / test
-  cue.js                hook entry point (fallback for non-macOS)
+  claude-voice-cue.js   user-facing CLI (Option B): status/install/uninstall/test
+  cue.js                CLI hook entry point (fallback for non-macOS)
 src/
   installer.js          settings.json merge, backup, atomic write, idempotency
   notifier.js           platform TTS dispatch: say | espeak | SAPI | bell

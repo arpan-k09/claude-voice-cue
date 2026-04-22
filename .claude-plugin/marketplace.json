@@ -1,0 +1,36 @@
+{
+  "name": "claude-voice-cue",
+  "owner": {
+    "name": "Arpan Korat",
+    "url": "https://github.com/arpan-k09"
+  },
+  "metadata": {
+    "description": "Voice cue plugin for Claude Code — speaks when Claude needs input.",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "claude-voice-cue",
+      "source": ".",
+      "description": "Speaks a short phrase the moment Claude is waiting on you — plan approval, tool approval, or any other attention-wanted event.",
+      "version": "0.2.0",
+      "author": {
+        "name": "Arpan Korat",
+        "url": "https://github.com/arpan-k09"
+      },
+      "homepage": "https://github.com/arpan-k09/claude-voice-cue",
+      "repository": "https://github.com/arpan-k09/claude-voice-cue",
+      "license": "MIT",
+      "keywords": [
+        "notification",
+        "voice",
+        "tts",
+        "hook",
+        "audio",
+        "accessibility"
+      ],
+      "category": "productivity",
+      "tags": ["notification", "audio", "accessibility"]
+    }
+  ]
+}
